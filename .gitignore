@@ -1,0 +1,23 @@
+# Secrets - JAMAIS dans Git
+.env
+
+# Logs Airflow (generes automatiquement, tres volumineux)
+logs/
+
+# Cache Python
+__pycache__/
+*.pyc
+
+# Anciens fichiers de test (meteo, hors perimetre du projet AQI)
+output/
+
+# Docker
+.docker/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editeurs
+.vscode/
+.idea/
