@@ -1,0 +1,7 @@
+[
+    {"ville": "Antananarivo", "pays": "MG", "lat": -18.8792, "lon": 47.5079},
+    {"ville": "Paris", "pays": "FR", "lat": 48.8566, "lon": 2.3522},
+    {"ville": "New York", "pays": "US", "lat": 40.7128, "lon": -74.0060},
+    {"ville": "Tokyo", "pays": "JP", "lat": 35.6762, "lon": 139.6503},
+    {"ville": "Sydney", "pays": "AU", "lat": -33.8688, "lon": 151.2093}
+]
