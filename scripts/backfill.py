@@ -11,14 +11,31 @@ import os
 import json
 import argparse
 import requests
+from pathlib import Path
+from dotenv import load_dotenv
 from datetime import datetime, timedelta, timezone
 
-RAW_DIR = os.environ.get("RAW_DIR", "/opt/airflow/raw")
-CONFIG_PATH = os.environ.get("CITIES_CONFIG", "/opt/airflow/config/cities.json")
+BASE_DIR = Path(__file__).resolve().parents[1]
+
+load_dotenv(BASE_DIR / ".env")
+
+RAW_DIR = Path(
+    os.environ.get(
+        "RAW_DIR",
+        BASE_DIR / "raw"
+    )
+)
+
+CONFIG_PATH = Path(
+    os.environ.get(
+        "CITIES_CONFIG",
+        BASE_DIR / "config" / "cities.json"
+    )
+)
+
 API_KEY = os.environ.get("OWM_API_KEY")
 
 BASE_URL = "https://api.openweathermap.org/data/2.5/air_pollution/history"
-
 
 def load_cities():
     with open(CONFIG_PATH, "r", encoding="utf-8") as f:
@@ -39,11 +56,11 @@ def fetch_day(lat, lon, day_start, day_end):
 
 
 def save_raw(ville, day, payload):
-    ville_dir = os.path.join(RAW_DIR, ville.replace(" ", "_"))
-    os.makedirs(ville_dir, exist_ok=True)
+    ville_dir = RAW_DIR / ville.replace(" ", "_")
+    ville_dir.mkdir(parents=True, exist_ok=True)
 
     filename = f"{ville.replace(' ', '_')}_history_{day.strftime('%Y-%m-%d')}.json"
-    filepath = os.path.join(ville_dir, filename)
+    filepath = ville_dir / filename
 
     with open(filepath, "w", encoding="utf-8") as f:
         json.dump(payload, f, ensure_ascii=False, indent=2)
