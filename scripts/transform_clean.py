@@ -9,11 +9,29 @@ import os
 import json
 import glob
 import pandas as pd
+from pathlib import Path
+from dotenv import load_dotenv
 from datetime import datetime, timezone
 
-RAW_DIR = os.environ.get("RAW_DIR", "/opt/airflow/raw")
-CLEAN_DIR = os.environ.get("CLEAN_DIR", "/opt/airflow/clean")
-CLEAN_FILE = os.path.join(CLEAN_DIR, "clean.csv")
+BASE_DIR = Path(__file__).resolve().parents[1]
+
+load_dotenv(BASE_DIR / ".env", override=True)
+
+RAW_DIR = Path(
+    os.environ.get(
+        "RAW_DIR",
+        BASE_DIR / "raw"
+    )
+)
+
+CLEAN_DIR = Path(
+    os.environ.get(
+        "CLEAN_DIR",
+        BASE_DIR / "clean"
+    )
+)
+
+CLEAN_FILE = CLEAN_DIR / "clean.csv"
 
 # Composants de pollution renvoyes par OpenWeatherMap Air Pollution API
 POLLUTANT_KEYS = ["co", "no", "no2", "o3", "so2", "pm2_5", "pm10", "nh3"]
@@ -57,7 +75,7 @@ def parse_raw_file(filepath):
 
 
 def build_clean():
-    pattern = os.path.join(RAW_DIR, "*", "*.json")
+    pattern = str(RAW_DIR / "*" / "*.json")
     raw_files = glob.glob(pattern)
 
     if not raw_files:
@@ -84,7 +102,7 @@ def build_clean():
     # Tri chronologique, puis par ville pour la lisibilite
     df = df.sort_values(by=["timestamp_utc", "ville"]).reset_index(drop=True)
 
-    os.makedirs(CLEAN_DIR, exist_ok=True)
+    CLEAN_DIR.mkdir(parents=True, exist_ok=True)
     df.to_csv(CLEAN_FILE, index=False)
 
     print(f"clean.csv reconstruit : {len(df)} lignes, {df['ville'].nunique()} villes.")
