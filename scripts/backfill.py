@@ -9,6 +9,10 @@ Usage:
 
 Une pause (REQUEST_DELAY_SECONDS) est appliquee entre chaque appel API pour
 rester sous la limite de 60 appels/minute du plan gratuit OpenWeatherMap.
+
+RETRY : chaque appel est retente automatiquement (MAX_RETRIES fois, avec
+un delai croissant) avant d'etre marque en erreur. Absorbe les timeouts et
+coupures reseau ponctuelles (DNS, SSL) sans perdre de jours silencieusement.
 """
 import os
 import json
@@ -21,7 +25,7 @@ from datetime import datetime, timedelta, timezone
 
 BASE_DIR = Path(__file__).resolve().parents[1]
 
-load_dotenv(BASE_DIR / ".env")
+load_dotenv(BASE_DIR / ".env", override=True)
 
 RAW_DIR = Path(
     os.environ.get(
@@ -45,6 +49,10 @@ BASE_URL = "https://api.openweathermap.org/data/2.5/air_pollution/history"
 # 1.1s de pause -> ~54 appels/minute, marge de securite incluse.
 REQUEST_DELAY_SECONDS = 1.1
 
+# Retry sur erreurs reseau transitoires (timeout, DNS, SSL, connexion coupee)
+MAX_RETRIES = 3
+RETRY_BACKOFF_SECONDS = 5  # 5s, puis 10s, puis 15s entre les tentatives
+
 
 def load_cities():
     with open(CONFIG_PATH, "r", encoding="utf-8") as f:
@@ -52,16 +60,37 @@ def load_cities():
 
 
 def fetch_day(lat, lon, day_start, day_end):
-    params = {
-        "lat": lat,
-        "lon": lon,
-        "start": int(day_start.timestamp()),
-        "end": int(day_end.timestamp()),
-        "appid": API_KEY,
-    }
-    response = requests.get(BASE_URL, params=params, timeout=20)
-    response.raise_for_status()
-    return response.json()
+    """Recupere les donnees d'un jour, avec retry automatique sur erreurs
+    reseau transitoires. Leve la derniere exception si tous les essais echouent."""
+    last_error = None
+    for attempt in range(1, MAX_RETRIES + 1):
+        try:
+            params = {
+                "lat": lat,
+                "lon": lon,
+                "start": int(day_start.timestamp()),
+                "end": int(day_end.timestamp()),
+                "appid": API_KEY,
+            }
+            response = requests.get(BASE_URL, params=params, timeout=20)
+            response.raise_for_status()
+            return response.json()
+        except (requests.exceptions.ConnectionError,
+                requests.exceptions.Timeout,
+                requests.exceptions.ChunkedEncodingError) as e:
+            # Erreurs reseau transitoires : ca vaut le coup de reessayer
+            last_error = e
+            if attempt < MAX_RETRIES:
+                wait = RETRY_BACKOFF_SECONDS * attempt
+                print(f"  [RETRY {attempt}/{MAX_RETRIES}] echec reseau, "
+                      f"nouvelle tentative dans {wait}s : {e}")
+                time.sleep(wait)
+        except requests.exceptions.HTTPError:
+            # Erreur HTTP (429 quota, 401 cle invalide, etc.) : pas la peine
+            # de reessayer, c'est structurel, pas transitoire
+            raise
+
+    raise last_error
 
 
 def save_raw(ville, day, payload):
@@ -91,6 +120,7 @@ def run_backfill(start_date, end_date):
     cities = load_cities()
     total_calls = 0
     total_errors = 0
+    failed_days = []
 
     for city in cities:
         ville = city["ville"]
@@ -110,16 +140,21 @@ def run_backfill(start_date, end_date):
                 print(f"[OK] {ville} {day.strftime('%Y-%m-%d')} -> {path}")
             except Exception as e:
                 total_errors += 1
-                print(f"[ERREUR] {ville} {day.strftime('%Y-%m-%d')} : {e}")
+                failed_days.append((ville, day.strftime('%Y-%m-%d')))
+                print(f"[ERREUR] {ville} {day.strftime('%Y-%m-%d')} "
+                      f"(apres {MAX_RETRIES} tentatives) : {e}")
             finally:
                 # Pause systematique (succes ou erreur) pour respecter le quota API
                 time.sleep(REQUEST_DELAY_SECONDS)
 
     print(f"\nBackfill termine : {total_calls} fichiers ecrits, {total_errors} erreurs.")
-    if total_errors:
-        print("Astuce : relance le script avec les memes --start/--end, il est "
+    if failed_days:
+        print("\nJours en echec (apres retries) :")
+        for ville, jour in failed_days:
+            print(f"  - {ville} {jour}")
+        print("\nAstuce : relance le script avec les memes --start/--end, il est "
               "rejouable sans creer de doublons (chaque jour ecrase juste son "
-              "propre fichier).")
+              "propre fichier). Seuls les jours en echec ci-dessus referont un appel utile.")
 
 
 if __name__ == "__main__":
