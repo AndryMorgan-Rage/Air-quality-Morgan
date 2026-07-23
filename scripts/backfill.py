@@ -6,9 +6,13 @@ par ville + jour, un nouvel appel ecrase juste le fichier du meme jour).
 Usage:
     python backfill.py --months 3
     python backfill.py --start 2025-07-01 --end 2026-07-01
+
+Une pause (REQUEST_DELAY_SECONDS) est appliquee entre chaque appel API pour
+rester sous la limite de 60 appels/minute du plan gratuit OpenWeatherMap.
 """
 import os
 import json
+import time
 import argparse
 import requests
 from pathlib import Path
@@ -36,6 +40,11 @@ CONFIG_PATH = Path(
 API_KEY = os.environ.get("OWM_API_KEY")
 
 BASE_URL = "https://api.openweathermap.org/data/2.5/air_pollution/history"
+
+# Plan gratuit OpenWeatherMap : 60 appels/minute max.
+# 1.1s de pause -> ~54 appels/minute, marge de securite incluse.
+REQUEST_DELAY_SECONDS = 1.1
+
 
 def load_cities():
     with open(CONFIG_PATH, "r", encoding="utf-8") as f:
@@ -81,6 +90,7 @@ def run_backfill(start_date, end_date):
 
     cities = load_cities()
     total_calls = 0
+    total_errors = 0
 
     for city in cities:
         ville = city["ville"]
@@ -99,9 +109,17 @@ def run_backfill(start_date, end_date):
                 total_calls += 1
                 print(f"[OK] {ville} {day.strftime('%Y-%m-%d')} -> {path}")
             except Exception as e:
+                total_errors += 1
                 print(f"[ERREUR] {ville} {day.strftime('%Y-%m-%d')} : {e}")
+            finally:
+                # Pause systematique (succes ou erreur) pour respecter le quota API
+                time.sleep(REQUEST_DELAY_SECONDS)
 
-    print(f"\nBackfill termine : {total_calls} fichiers ecrits.")
+    print(f"\nBackfill termine : {total_calls} fichiers ecrits, {total_errors} erreurs.")
+    if total_errors:
+        print("Astuce : relance le script avec les memes --start/--end, il est "
+              "rejouable sans creer de doublons (chaque jour ecrase juste son "
+              "propre fichier).")
 
 
 if __name__ == "__main__":

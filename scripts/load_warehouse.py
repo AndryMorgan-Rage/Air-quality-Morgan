@@ -5,9 +5,18 @@ est reconstruite entierement a partir de clean.csv a chaque execution.
 
 Necessite la variable d'environnement WAREHOUSE_DB_URL
 (format: postgresql://user:password@host:port/dbname)
+
+OPTIMISATION : tous les upserts sont faits en une seule requete groupee
+(psycopg2.extras.execute_values) au lieu d'un aller-retour reseau par ligne.
+Important car le warehouse est heberge a distance (Supabase, eu-west-1) :
+avec des centaines/milliers de lignes, des inserts un par un font
+exploser le temps d'execution au fil des runs (clean.csv grossit a
+chaque extraction horaire).
 """
 import os
 import pandas as pd
+import psycopg2
+import psycopg2.extras
 from sqlalchemy import create_engine, text
 
 CLEAN_FILE = os.environ.get("CLEAN_FILE", "/opt/airflow/clean/clean.csv")
@@ -77,65 +86,92 @@ def run_load():
         print("clean.csv est vide, rien a charger.")
         return
 
+    # DDL via SQLAlchemy (une seule fois, pas de volume ici)
     engine = create_engine(DB_URL)
-
     with engine.begin() as conn:
         for statement in DDL.strip().split(";"):
             if statement.strip():
                 conn.execute(text(statement))
 
-    # --- dim_ville : upsert ---
-    villes = df[["ville", "pays", "latitude", "longitude"]].drop_duplicates()
-    with engine.begin() as conn:
-        for _, row in villes.iterrows():
-            conn.execute(text("""
-                INSERT INTO dim_ville (nom, pays, latitude, longitude)
-                VALUES (:nom, :pays, :lat, :lon)
-                ON CONFLICT (nom, pays) DO UPDATE
-                SET latitude = EXCLUDED.latitude, longitude = EXCLUDED.longitude
-            """), {"nom": row["ville"], "pays": row["pays"],
-                   "lat": row["latitude"], "lon": row["longitude"]})
+    # Pour le reste, on passe par psycopg2 brut + execute_values :
+    # un seul aller-retour reseau par table, quel que soit le nombre de lignes.
+    raw_conn = psycopg2.connect(DB_URL)
+    try:
+        with raw_conn:
+            with raw_conn.cursor() as cur:
+                # --- dim_ville : upsert groupe ---
+                villes = df[["ville", "pays", "latitude", "longitude"]].drop_duplicates()
+                villes_values = list(villes.itertuples(index=False, name=None))
+                psycopg2.extras.execute_values(
+                    cur,
+                    """
+                    INSERT INTO dim_ville (nom, pays, latitude, longitude)
+                    VALUES %s
+                    ON CONFLICT (nom, pays) DO UPDATE
+                    SET latitude = EXCLUDED.latitude, longitude = EXCLUDED.longitude
+                    """,
+                    villes_values,
+                )
 
-    # --- dim_temps : upsert ---
-    dim_temps = build_dim_temps(df)
-    with engine.begin() as conn:
-        for _, row in dim_temps.iterrows():
-            conn.execute(text("""
-                INSERT INTO dim_temps (timestamp_utc, date, heure, jour_semaine, est_weekend, mois, annee)
-                VALUES (:ts, :date, :heure, :jour, :weekend, :mois, :annee)
-                ON CONFLICT (timestamp_utc) DO NOTHING
-            """), {"ts": row["timestamp_utc"].isoformat(), "date": str(row["date"]),
-                   "heure": int(row["heure"]), "jour": row["jour_semaine"],
-                   "weekend": bool(row["est_weekend"]), "mois": int(row["mois"]),
-                   "annee": int(row["annee"])})
+                # --- dim_temps : upsert groupe ---
+                dim_temps = build_dim_temps(df)
+                temps_values = [
+                    (
+                        row.timestamp_utc.isoformat(),
+                        str(row.date),
+                        int(row.heure),
+                        row.jour_semaine,
+                        bool(row.est_weekend),
+                        int(row.mois),
+                        int(row.annee),
+                    )
+                    for row in dim_temps.itertuples(index=False)
+                ]
+                psycopg2.extras.execute_values(
+                    cur,
+                    """
+                    INSERT INTO dim_temps
+                        (timestamp_utc, date, heure, jour_semaine, est_weekend, mois, annee)
+                    VALUES %s
+                    ON CONFLICT (timestamp_utc) DO NOTHING
+                    """,
+                    temps_values,
+                )
 
-    # --- fact_aqi : recharge complete via jointures sur les dimensions ---
-    ville_map = pd.read_sql("SELECT ville_id, nom, pays FROM dim_ville", engine)
-    temps_map = pd.read_sql("SELECT temps_id, timestamp_utc FROM dim_temps", engine)
+            # --- fact_aqi : recharge complete via jointures sur les dimensions ---
+            ville_map = pd.read_sql("SELECT ville_id, nom, pays FROM dim_ville", engine)
+            temps_map = pd.read_sql("SELECT temps_id, timestamp_utc FROM dim_temps", engine)
 
-    df["timestamp_utc"] = pd.to_datetime(df["timestamp_utc"], utc=True)
-    temps_map["timestamp_utc"] = pd.to_datetime(temps_map["timestamp_utc"], utc=True)
+            df["timestamp_utc"] = pd.to_datetime(df["timestamp_utc"], utc=True)
+            temps_map["timestamp_utc"] = pd.to_datetime(temps_map["timestamp_utc"], utc=True)
 
-    merged = df.merge(ville_map, left_on=["ville", "pays"], right_on=["nom", "pays"])
-    merged = merged.merge(temps_map, on="timestamp_utc")
+            merged = df.merge(ville_map, left_on=["ville", "pays"], right_on=["nom", "pays"])
+            merged = merged.merge(temps_map, on="timestamp_utc")
 
-    with engine.begin() as conn:
-        for _, row in merged.iterrows():
-            conn.execute(text("""
-                INSERT INTO fact_aqi (ville_id, temps_id, aqi, co, no, no2, o3, so2, pm2_5, pm10, nh3)
-                VALUES (:ville_id, :temps_id, :aqi, :co, :no, :no2, :o3, :so2, :pm2_5, :pm10, :nh3)
-                ON CONFLICT (ville_id, temps_id) DO UPDATE SET
-                    aqi = EXCLUDED.aqi, co = EXCLUDED.co, no = EXCLUDED.no, no2 = EXCLUDED.no2,
-                    o3 = EXCLUDED.o3, so2 = EXCLUDED.so2, pm2_5 = EXCLUDED.pm2_5,
-                    pm10 = EXCLUDED.pm10, nh3 = EXCLUDED.nh3
-            """), {
-                "ville_id": int(row["ville_id"]), "temps_id": int(row["temps_id"]),
-                "aqi": row["aqi"], "co": row["co"], "no": row["no"], "no2": row["no2"],
-                "o3": row["o3"], "so2": row["so2"], "pm2_5": row["pm2_5"],
-                "pm10": row["pm10"], "nh3": row["nh3"],
-            })
+            fact_cols = ["ville_id", "temps_id", "aqi", "co", "no", "no2",
+                         "o3", "so2", "pm2_5", "pm10", "nh3"]
+            fact_values = list(
+                merged[fact_cols].itertuples(index=False, name=None)
+            )
 
-    print(f"Warehouse charge : {len(merged)} lignes dans fact_aqi.")
+            with raw_conn.cursor() as cur:
+                psycopg2.extras.execute_values(
+                    cur,
+                    """
+                    INSERT INTO fact_aqi
+                        (ville_id, temps_id, aqi, co, no, no2, o3, so2, pm2_5, pm10, nh3)
+                    VALUES %s
+                    ON CONFLICT (ville_id, temps_id) DO UPDATE SET
+                        aqi = EXCLUDED.aqi, co = EXCLUDED.co, no = EXCLUDED.no,
+                        no2 = EXCLUDED.no2, o3 = EXCLUDED.o3, so2 = EXCLUDED.so2,
+                        pm2_5 = EXCLUDED.pm2_5, pm10 = EXCLUDED.pm10, nh3 = EXCLUDED.nh3
+                    """,
+                    fact_values,
+                )
+
+        print(f"Warehouse charge : {len(merged)} lignes dans fact_aqi.")
+    finally:
+        raw_conn.close()
 
 
 if __name__ == "__main__":

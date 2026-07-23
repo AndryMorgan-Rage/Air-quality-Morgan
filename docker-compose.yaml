@@ -40,8 +40,8 @@ x-airflow-common:
     AIRFLOW__API_AUTH__JWT_SECRET: ${AIRFLOW__API_AUTH__JWT_SECRET:-airflow_jwt_secret}
     AIRFLOW__API_AUTH__JWT_ISSUER: ${AIRFLOW__API_AUTH__JWT_ISSUER:-airflow}
     AIRFLOW__SCHEDULER__ENABLE_HEALTH_CHECK: 'true'
-    # MODIFIE : ajout de requests/pandas/sqlalchemy/psycopg2-binary pour le pipeline AQI
-    _PIP_ADDITIONAL_REQUIREMENTS: ${_PIP_ADDITIONAL_REQUIREMENTS:-requests pandas sqlalchemy psycopg2-binary}
+    # MODIFIE : ajout de requests/pandas/sqlalchemy/psycopg2-binary/python-dotenv pour le pipeline AQI
+    _PIP_ADDITIONAL_REQUIREMENTS: ${_PIP_ADDITIONAL_REQUIREMENTS:-requests pandas sqlalchemy psycopg2-binary python-dotenv}
     AIRFLOW_CONFIG: '/opt/airflow/config/airflow.cfg'
   volumes:
     - ${AIRFLOW_PROJ_DIR:-.}/dags:/opt/airflow/dags
