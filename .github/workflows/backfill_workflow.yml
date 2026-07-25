@@ -1,0 +1,53 @@
+name: AQI Backfill
+
+on:
+  workflow_dispatch:
+    inputs:
+      months:
+        description: "Nombre de mois d'historique a recuperer"
+        required: true
+        default: "3"
+
+jobs:
+  run-backfill:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout du repo
+        uses: actions/checkout@v4
+
+      - name: Installer Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Installer les dependances
+        run: pip install -r requirements.txt
+
+      - name: Lancer le backfill
+        env:
+          OWM_API_KEY: ${{ secrets.OWM_API_KEY }}
+          RAW_DIR: ${{ github.workspace }}/raw
+          CLEAN_DIR: ${{ github.workspace }}/clean
+          CITIES_CONFIG: ${{ github.workspace }}/config/cities.json
+        run: python scripts/backfill.py --months ${{ inputs.months }}
+
+      - name: Reconstruire clean.csv
+        env:
+          RAW_DIR: ${{ github.workspace }}/raw
+          CLEAN_DIR: ${{ github.workspace }}/clean
+        run: python scripts/transform_clean.py
+
+      - name: Charger dans le warehouse
+        env:
+          WAREHOUSE_DB_URL: ${{ secrets.WAREHOUSE_DB_URL }}
+          CLEAN_FILE: ${{ github.workspace }}/clean/clean.csv
+        run: python scripts/load_warehouse.py
+
+      - name: Committer les donnees du backfill
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git add raw/ clean/
+          git diff --staged --quiet || git commit -m "Backfill automatique (${{ inputs.months }} mois) - $(date -u '+%Y-%m-%d %H:%M UTC')"
+          git push
