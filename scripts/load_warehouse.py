@@ -14,12 +14,16 @@ exploser le temps d'execution au fil des runs (clean.csv grossit a
 chaque extraction horaire).
 """
 import os
+from pathlib import Path
 import pandas as pd
 import psycopg2
 import psycopg2.extras
 from sqlalchemy import create_engine, text
 
-CLEAN_FILE = os.environ.get("CLEAN_FILE", "/opt/airflow/clean/clean.csv")
+BASE_DIR = Path(__file__).resolve().parents[1]
+
+CLEAN_DIR = Path(os.environ.get("CLEAN_DIR", BASE_DIR / "clean"))
+CLEAN_FILE = CLEAN_DIR / "clean.csv"
 DB_URL = os.environ.get("WAREHOUSE_DB_URL")
 
 DDL = """

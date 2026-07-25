@@ -1,0 +1,39 @@
+name: AQI Pipeline
+
+on:
+  schedule:
+    - cron: "0 * * * *"   # toutes les heures, a la minute 0
+  workflow_dispatch:        # permet de declencher manuellement depuis l'onglet Actions
+
+jobs:
+  run-pipeline:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout du repo
+        uses: actions/checkout@v4
+
+      - name: Installer Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Installer les dependances
+        run: pip install -r requirements.txt
+
+      - name: Lancer le pipeline (extract -> transform -> load)
+        env:
+          OWM_API_KEY: ${{ secrets.OWM_API_KEY }}
+          WAREHOUSE_DB_URL: ${{ secrets.WAREHOUSE_DB_URL }}
+          RAW_DIR: ${{ github.workspace }}/raw
+          CLEAN_DIR: ${{ github.workspace }}/clean
+          CITIES_CONFIG: ${{ github.workspace }}/config/cities.json
+        run: python scripts/run_hourly.py
+
+      - name: Committer les nouvelles donnees collectees
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git add raw/ clean/
+          git diff --staged --quiet || git commit -m "Donnees AQI automatiques - $(date -u '+%Y-%m-%d %H:%M UTC')"
+          git push
